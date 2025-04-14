@@ -260,218 +260,265 @@ namespace StreamDataCryption::RC4
 		return std::make_pair(result_high, result_low);
 	}
 
-	std::vector<std::uint8_t> RivestCipher4Star::GenerateKeyStream(std::size_t Count)
+	写完整版本
+	
+	std::vector<std::uint8_t> RivestCipher4Star::KeyScheduling(std::span<const std::uint8_t> Keys)
 	{
-		std::vector<std::uint8_t> KeyStream;
-
-		std::uint32_t LeftIndex = 0;
-		std::uint32_t RightIndex = 0;
-
-		for (std::uint64_t Round = 0; Round < Count; ++Round)
+		// ---------- 本地工具：PHT 正反对、稳定平方模素数 ----------
+		auto PseudoHadamardTransformForward32 = [](std::uint32_t LeftValue, std::uint32_t RightValue) -> std::pair<std::uint32_t, std::uint32_t>
 		{
-			// XOR the two least significant bits of the two state variables
-			std::uint8_t KeyByteData = (KeyState[LeftIndex] - KeyState[RightIndex]) ^ ((KeyState[RightIndex] + KeyState[LeftIndex]) % 251);
+			// Forward PHT: (x, y) -> (x + y, x + 2y)
+			const std::uint32_t ForwardLeftValue  = LeftValue + RightValue;
+			const std::uint32_t ForwardRightValue = LeftValue + (RightValue << 1);
+			return { ForwardLeftValue, ForwardRightValue };
+		};
 
-			// Perform a bitwise rotation
-			std::uint8_t RotatedByteData = (KeyState[RightIndex] >> 1) | ((KeyState[LeftIndex] % 251) << 7);
+		auto PseudoHadamardTransformBackward32 = [](std::uint32_t LeftValue, std::uint32_t RightValue) -> std::pair<std::uint32_t, std::uint32_t>
+		{
+			// Backward form (按你原式保留): (u, v) -> (v - u, 2u - v)
+			const std::uint32_t BackwardLeftValue  = RightValue - LeftValue;
+			const std::uint32_t BackwardRightValue = (LeftValue << 1) - RightValue;
+			return { BackwardLeftValue, BackwardRightValue };
+		};
 
-			// Multiply the rotated byte by a constant and take the lowest 8 bits
-			std::uint8_t MultipliedByteData = ((LeftIndex + RotatedByteData) * (RightIndex + RotatedByteData)) % 256;
+		auto SquareModuloPrimeNumber32Bit = [&](std::uint64_t Value) -> std::uint64_t
+		{
+			const std::uint64_t ReducedValue = Value % static_cast<std::uint64_t>(PrimeNumber32Bit);
 
-			// Use the multiplied byte to calculate the new LeftIndex
-			LeftIndex = Modulo256Addition(LeftIndex, MultipliedByteData);
+	#if defined(__SIZEOF_INT128__)
+			const unsigned __int128 Product = static_cast<unsigned __int128>(ReducedValue) * static_cast<unsigned __int128>(ReducedValue);
+			return static_cast<std::uint64_t>(Product % static_cast<unsigned __int128>(PrimeNumber32Bit));
+	#else
+			// ReducedValue < 2^32，因此 64-bit 乘法不会溢出
+			return (ReducedValue * ReducedValue) % static_cast<std::uint64_t>(PrimeNumber32Bit);
+	#endif
+		};
 
-			// Use the PermutationTable to calculate the new RightIndex
-			RightIndex = Modulo256Addition(RightIndex, PermutationTable[LeftIndex]);
-
-			// Swap the two state variables
-			std::swap(KeyState[LeftIndex], KeyState[RightIndex]);
-
-			// Push the byte to the keystream
-			KeyStream.push_back(KeyState[KeyByteData]);
+		// ---------- 0) 初始化 KeyState 为 0..255 ----------
+		for (std::uint32_t ByteIndex = 0; ByteIndex < 256; ++ByteIndex)
+		{
+			KeyState[ByteIndex] = static_cast<std::uint8_t>(ByteIndex);
 		}
 
-		for (std::uint32_t i = 0, j = 0; i < 256; i++)
+		// ---------- 1) 处理空 Key：给确定行为 ----------
+		if (Keys.empty())
 		{
-			j = Modulo256Addition(j, Modulo256Addition(KeyState[i % KeyState.size()], PermutationTable[i]));
-			std::swap(PermutationTable[i], PermutationTable[j]);
+			static constexpr std::uint8_t ZeroKeyByte = 0;
+			Keys = std::span<const std::uint8_t>(&ZeroKeyByte, 1);
 		}
 
-		return KeyStream;
-	}
-
-	void RivestCipher4Star::KeyScheduling(std::span<const std::uint8_t> Keys)
-	{
-		std::vector<std::uint32_t> RandomDataArray;
-
-		//RDA, RDB, RDC, RDD
-		std::uint64_t RandomDataA = 0;
-		std::uint64_t RandomDataB = 0;
-		std::uint64_t RandomDataC = 0;
-		std::uint64_t RandomDataD = 0;
-
-		std::pair<std::uint64_t, std::uint64_t> Two64Bit{ 0,0 };
-		auto& [A, B] = Two64Bit;
-
-		/*
-			Key(8-bit array)
-			Keys = Keys[0], Keys[1], Key[2], Keys[3], Keys[4], Keys[5]
-			B(64-bit) = Keys[0],  Keys[2], Keys[4] ......
-			A(64-bit) = Keys[1],  Keys[3], Keys[5] ......
-		*/
-		for (std::uint32_t i = 0; i < 16; i++)
+		// ---------- 2) 固定 16 字节 KeyBlock（你原设计：交错拼接） ----------
+		std::array<std::uint8_t, 16> KeyBlock{};
+		for (std::uint32_t KeyBlockIndex = 0; KeyBlockIndex < 16; ++KeyBlockIndex)
 		{
-			//The cross bit concat
-			if (i & 1)
+			KeyBlock[KeyBlockIndex] = Keys[KeyBlockIndex % Keys.size()];
+		}
+
+		// ---------- 3) Cross-bit concat：交错拼 A/B ----------
+		std::uint64_t ConcatenatedValueA = 0;
+		std::uint64_t ConcatenatedValueB = 0;
+
+		for (std::uint32_t KeyBlockIndex = 0; KeyBlockIndex < 16; ++KeyBlockIndex)
+		{
+			if (KeyBlockIndex & 1u)
 			{
-				A <<= 8;
-				A |= static_cast<std::uint64_t>(Keys[i]);
+				ConcatenatedValueA = (ConcatenatedValueA << 8) | static_cast<std::uint64_t>(KeyBlock[KeyBlockIndex]);
 			}
+			else
 			{
-				B <<= 8;
-				B |= static_cast<std::uint64_t>(Keys[i]);
+				ConcatenatedValueB = (ConcatenatedValueB << 8) | static_cast<std::uint64_t>(KeyBlock[KeyBlockIndex]);
 			}
 		}
 
-		std::mt19937_64 PRNG_MT19937(std::mt19937_64::default_seed);
+		// ---------- 4) Folded Multiply：真 64x64->128 ----------
+		const std::pair<std::uint64_t, std::uint64_t> FoldedMultiplyOutput =
+			RivestCipher4Star::LongNumberMultiply(ConcatenatedValueA, ConcatenatedValueB);
 
-		if (std::ranges::all_of(Keys.begin(), Keys.end(), [](std::uint8_t key) { return key == 0; }) == true)
+		const std::uint64_t FoldedMultiplyHighPart = FoldedMultiplyOutput.first;
+		const std::uint64_t FoldedMultiplyLowPart  = FoldedMultiplyOutput.second;
+
+		// ---------- 5) MT19937_64：必须 key 可复现 ----------
+		const std::uint64_t DeterministicSeed =
+			(FoldedMultiplyHighPart ^ FoldedMultiplyLowPart) ^
+			0xA5A5A5A5A5A5A5A5ull ^
+			(static_cast<std::uint64_t>(Keys.size()) << 56);
+
+		std::mt19937_64 PseudoRandomNumberGeneratorMT19937_64(DeterministicSeed);
+
+		std::uint64_t RandomDataA = PseudoRandomNumberGeneratorMT19937_64();
+		std::uint64_t RandomDataB = PseudoRandomNumberGeneratorMT19937_64();
+		std::uint64_t RandomDataC = PseudoRandomNumberGeneratorMT19937_64();
+		std::uint64_t RandomDataD = PseudoRandomNumberGeneratorMT19937_64();
+
+		// ---------- 6) 生成 RandomDataArray：固定成本填满 256 word ----------
+		std::array<std::uint32_t, 256> RandomDataArray{};
+
+		for (std::uint32_t BlockIndex = 0; BlockIndex < 64; ++BlockIndex)
 		{
-			RandomDataA = PRNG_MT19937();
-			RandomDataB = RandomDataA * 2 + PRNG_MT19937();
-			RandomDataC = RandomDataB * 2 + PRNG_MT19937();
-			RandomDataD = RandomDataC * 2 + PRNG_MT19937();
-		}
-		else
-		{
-			//Folded Multiply Algorithm Step:
-			//1. (A * B) -> A'(C_High) B'(C_Low)
-			//2. A' bit_xor B'
-			Two64Bit = LongNumberMultiply(A, B);
-			PRNG_MT19937.seed(A ^ B);
+			const std::uint32_t KeyIndex0 = (BlockIndex * 2u) % static_cast<std::uint32_t>(Keys.size());
+			const std::uint32_t KeyIndex1 = (KeyIndex0 + 1u) % static_cast<std::uint32_t>(Keys.size());
 
-			RandomDataA = PRNG_MT19937();
-			RandomDataB = RandomDataA * 2 + PRNG_MT19937();
-			RandomDataC = RandomDataB * 2 + PRNG_MT19937();
-			RandomDataD = RandomDataC * 2 + PRNG_MT19937();
-		}
+			const std::uint8_t KeyByte0 = Keys[KeyIndex0];
+			const std::uint8_t KeyByte1 = Keys[KeyIndex1];
 
-		//Generate Random Data With Use Byte Key
-		for (std::uint64_t KeyIndex = 0; KeyIndex < Keys.size(); KeyIndex += 2)
-		{
-			//RDA = Keys[i] * Keys[(i + 1) mod Keys.size()]
-			//RDC = RDB + RDA (mod 2^64)
-			RandomDataA = Keys[KeyIndex] * Keys[(KeyIndex + 1) % Keys.size()];
-			std::uint64_t RandomDataC = RandomDataB + RandomDataA;
+			// RDA = KeyByte0 * KeyByte1
+			RandomDataA = static_cast<std::uint64_t>(KeyByte0) * static_cast<std::uint64_t>(KeyByte1);
 
-			// Perform bitwise mixing here (Marsaglia's Xorshift)
+			// RDC = RDB + RDA
+			RandomDataC = RandomDataB + RandomDataA;
 
+			// Marsaglia-ish xorshift mixing（保留结构）
 			RandomDataA ^= (RandomDataB << 23) ^ (RandomDataD << 59);
-			RandomDataB ^= (RandomDataC << 5) ^ (RandomDataA >> 41);
+			RandomDataB ^= (RandomDataC << 5)  ^ (RandomDataA >> 41);
 			RandomDataC ^= (RandomDataD << 37) ^ (RandomDataB >> 28);
 			RandomDataD ^= (RandomDataA << 47) ^ (RandomDataC >> 16);
 
-			RandomDataA += ((RandomDataD * RandomDataD) % PrimeNumber32Bit);
-			RandomDataB += ((RandomDataA * RandomDataA) % PrimeNumber32Bit);
-			RandomDataC += ((RandomDataB * RandomDataB) % PrimeNumber32Bit);
-			RandomDataD += ((RandomDataC * RandomDataC) % PrimeNumber32Bit);
+			// 平方模素数搅拌（保留）
+			RandomDataA += SquareModuloPrimeNumber32Bit(RandomDataD);
+			RandomDataB += SquareModuloPrimeNumber32Bit(RandomDataA);
+			RandomDataC += SquareModuloPrimeNumber32Bit(RandomDataB);
+			RandomDataD += SquareModuloPrimeNumber32Bit(RandomDataC);
 
-			if (RandomDataD > std::numeric_limits<std::uint32_t>::max())
-			{
-				RandomDataArray.push_back(RandomDataD >> 32);
-				RandomDataArray.push_back(RandomDataD & 0x00000000FFFFFFFF);
-			}
-			else
-			{
-				RandomDataArray.push_back(RandomDataD);
-			}
+			// 按你原“D, C, B, A”顺序落到 32-bit word（折叠 64->32）
+			const std::uint32_t WriteBaseIndex = BlockIndex * 4u;
 
-			if (RandomDataC > std::numeric_limits<std::uint32_t>::max())
-			{
-				RandomDataArray.push_back(RandomDataC >> 32);
-				RandomDataArray.push_back(RandomDataC & 0x00000000FFFFFFFF);
-			}
-			else
-			{
-				RandomDataArray.push_back(RandomDataC);
-			}
-
-			if (RandomDataB > std::numeric_limits<std::uint32_t>::max())
-			{
-				RandomDataArray.push_back(RandomDataB >> 32);
-				RandomDataArray.push_back(RandomDataB & 0x00000000FFFFFFFF);
-			}
-			else
-			{
-				RandomDataArray.push_back(RandomDataB);
-			}
-
-			if (RandomDataA > std::numeric_limits<std::uint32_t>::max())
-			{
-				RandomDataArray.push_back(RandomDataA >> 32);
-				RandomDataArray.push_back(RandomDataA & 0x00000000FFFFFFFF);
-			}
-			else
-			{
-				RandomDataArray.push_back(RandomDataA);
-			}
+			RandomDataArray[WriteBaseIndex + 0] = static_cast<std::uint32_t>((RandomDataD ^ (RandomDataD >> 32)) & 0xFFFFFFFFu);
+			RandomDataArray[WriteBaseIndex + 1] = static_cast<std::uint32_t>((RandomDataC ^ (RandomDataC >> 32)) & 0xFFFFFFFFu);
+			RandomDataArray[WriteBaseIndex + 2] = static_cast<std::uint32_t>((RandomDataB ^ (RandomDataB >> 32)) & 0xFFFFFFFFu);
+			RandomDataArray[WriteBaseIndex + 3] = static_cast<std::uint32_t>((RandomDataA ^ (RandomDataA >> 32)) & 0xFFFFFFFFu);
 		}
 
-		//Pseudo-Hadamard Transformation (Forward)
-		std::uint64_t RandomSeed = RandomDataA + RandomDataB;
-		std::uint64_t RandomSeed2 = RandomDataA + RandomDataB * 2;
+		// ---------- 7) Forward PHT 用于播种 + 洗牌（Fisher–Yates） ----------
+		const std::uint64_t ForwardSeedLeftValue  = RandomDataA + RandomDataB;
+		const std::uint64_t ForwardSeedRightValue = RandomDataA + RandomDataB * 2;
 
-		PRNG_MT19937.seed(RandomSeed ^ RandomSeed2);
+		PseudoRandomNumberGeneratorMT19937_64.seed(ForwardSeedLeftValue ^ ForwardSeedRightValue);
 
-		//Shuffle Generated Random Data Array
-		for (std::uint64_t RandomDataArrayIndex = 0; RandomDataArrayIndex < RandomDataArray.size(); ++RandomDataArrayIndex)
+		for (std::uint32_t ShuffleIndex = 255; ShuffleIndex > 0; --ShuffleIndex)
 		{
-			std::swap(RandomDataArray[RandomDataArrayIndex], RandomDataArray[PRNG_MT19937() % RandomDataArray.size()]);
+			const std::uint32_t SwapIndex =
+				static_cast<std::uint32_t>(PseudoRandomNumberGeneratorMT19937_64() % (static_cast<std::uint64_t>(ShuffleIndex) + 1ull));
+
+			std::swap(RandomDataArray[ShuffleIndex], RandomDataArray[SwapIndex]);
 		}
 
-		//Apply Byte Substitution Box
+		// ---------- 8) 双 S 盒 + 门级折叠（你钉死：绝不移除） ----------
 		for (auto& RandomData : RandomDataArray)
 		{
-			std::uint32_t Bit0 = static_cast<std::uint32_t>(ByteSubstitutionBoxA[ByteSubstitutionBoxA[(RandomData >> 24) & 0xFF]]) << 24;
-			std::uint32_t Bit1 = static_cast<std::uint32_t>(ByteSubstitutionBoxA[ByteSubstitutionBoxA[(RandomData >> 16) & 0xFF]]) << 16;
-			std::uint32_t Bit2 = static_cast<std::uint32_t>(ByteSubstitutionBoxA[ByteSubstitutionBoxA[(RandomData >> 8) & 0xFF]]) << 8;
-			std::uint32_t Bit3 = static_cast<std::uint32_t>(ByteSubstitutionBoxA[ByteSubstitutionBoxA[(RandomData) & 0xFF]]);
+			const std::uint32_t Bit0 =
+				static_cast<std::uint32_t>(ByteSubstitutionBoxA[ ByteSubstitutionBoxA[(RandomData >> 24) & 0xFFu] ]) << 24;
+			const std::uint32_t Bit1 =
+				static_cast<std::uint32_t>(ByteSubstitutionBoxA[ ByteSubstitutionBoxA[(RandomData >> 16) & 0xFFu] ]) << 16;
+			const std::uint32_t Bit2 =
+				static_cast<std::uint32_t>(ByteSubstitutionBoxA[ ByteSubstitutionBoxA[(RandomData >>  8) & 0xFFu] ]) <<  8;
+			const std::uint32_t Bit3 =
+				static_cast<std::uint32_t>(ByteSubstitutionBoxA[ ByteSubstitutionBoxA[(RandomData	  ) & 0xFFu] ]);
+
+			// ✅ 门级折叠：原样保留
 			RandomData = (Bit0 & Bit1) ^ (Bit2 | Bit3);
 		}
 
-		std::uint32_t IndexA = 0;
-		std::uint32_t IndexB = 0;
-		std::uint32_t IndexC = 0;
-		std::uint32_t IndexD = 0;
-
-		std::uint32_t LeftIndex = 0;
-		std::uint32_t RightIndex = 0;
-
-		//Fill Random Index And Apply Swap opertion to KeyState Array
+		// ---------- 9) 用 RandomDataArray 驱动 KeyState：正向 + 反向 PHT 的“交叉重洗”（按你指定的 swap 对） ----------
 		for (const auto& RandomData : RandomDataArray)
 		{
-			std::uint32_t XorShift = RandomData;
-			XorShift ^= (XorShift << 17); //a
-			IndexA = XorShift;
-			XorShift ^= (XorShift >> 15); //b
-			IndexB = XorShift;
-			XorShift ^= (XorShift << 26); //c
-			IndexC = XorShift;
-			IndexD = IndexA - IndexB - IndexC;
+			std::uint32_t XorShiftState = RandomData;
 
-			std::uint32_t L = (IndexB ^ IndexD);
-			std::uint32_t R = (IndexB & IndexC) + (IndexA | IndexD);
+			XorShiftState ^= (XorShiftState << 17);
+			const std::uint32_t IndexValueA = XorShiftState;
 
-			//Pseudo-Hadamard Transformation (Backward)
-			LeftIndex = R - L;
-			RightIndex = L * 2 - R;
+			XorShiftState ^= (XorShiftState >> 15);
+			const std::uint32_t IndexValueB = XorShiftState;
 
-			std::swap(KeyState[LeftIndex % 256], KeyState[RightIndex % 256]);
+			XorShiftState ^= (XorShiftState << 26);
+			const std::uint32_t IndexValueC = XorShiftState;
+
+			const std::uint32_t IndexValueD = IndexValueA - IndexValueB - IndexValueC;
+
+			const std::uint32_t LeftValue  = (IndexValueB ^ IndexValueD);
+			const std::uint32_t RightValue = (IndexValueB & IndexValueC) + (IndexValueA | IndexValueD);
+
+			const auto ForwardPair  = PseudoHadamardTransformForward32(LeftValue, RightValue);
+			const auto BackwardPair = PseudoHadamardTransformBackward32(LeftValue, RightValue);
+
+			// ✅ 你要的“交叉重洗”：
+			std::swap(KeyState[ForwardPair.first  & 0xFFu], KeyState[BackwardPair.second & 0xFFu]);
+			std::swap(KeyState[BackwardPair.first & 0xFFu], KeyState[ForwardPair.second  & 0xFFu]);
 		}
 
-		for (std::uint32_t i = 0; i < 256; i++)
+		// ---------- 10) 生成 PermutationTable：只生成一次（无二次重洗） ----------
+		for (std::uint32_t TableIndex = 0; TableIndex < 256; ++TableIndex)
 		{
-			PermutationTable[i] = KeyState[KeyState[i]];
+			PermutationTable[TableIndex] = KeyState[ KeyState[TableIndex] ];
 		}
+
+		// ---------- 11) 返回生成好的 PermutationTable ----------
+		return std::vector<std::uint8_t>(PermutationTable.begin(), PermutationTable.end());
+	}
+
+	static inline std::uint8_t ReduceModulo251_Byte(std::uint8_t Value)
+	{
+		// Value: 0..255，最多减一次
+		std::int16_t CandidateValue = static_cast<std::int16_t>(static_cast<std::int16_t>(Value) - 251);
+		CandidateValue += (CandidateValue >> 15) & 251; // 负数则加回 251
+		return static_cast<std::uint8_t>(CandidateValue);
+	}
+
+	static inline std::uint8_t ReduceModulo251_Sum(std::uint8_t LeftValue, std::uint8_t RightValue)
+	{
+		// Sum: 0..510，最多减两次
+		std::int16_t CandidateValue = static_cast<std::int16_t>(static_cast<std::int16_t>(LeftValue) + static_cast<std::int16_t>(RightValue) - 251);
+		CandidateValue += (CandidateValue >> 15) & 251;
+
+		CandidateValue = static_cast<std::int16_t>(CandidateValue - 251);
+		CandidateValue += (CandidateValue >> 15) & 251;
+
+		return static_cast<std::uint8_t>(CandidateValue);
+	}
+
+	std::vector<std::uint8_t> RivestCipher4Star::GenerateKeyStream(std::size_t Count)
+	{
+		std::vector<std::uint8_t> KeyStream(Count);
+
+		// 用 8-bit 索引让溢出自然回绕，避免 %256
+		std::uint8_t LeftIndex = 0;
+		std::uint8_t RightIndex = 0;
+
+		// 本地指针加速（少一点边界检查开销）
+		std::uint8_t* KeyStatePointer = KeyState.data();
+		const std::uint8_t* PermutationTablePointer = PermutationTable.data();
+
+		for (std::size_t RoundIndex = 0; RoundIndex < Count; ++RoundIndex)
+		{
+			const std::uint8_t LeftValue = KeyStatePointer[LeftIndex];
+			const std::uint8_t RightValue = KeyStatePointer[RightIndex];
+
+			// 你原本的“差分 + (和 mod 251)”结构：保留
+			const std::uint8_t SumModuloPrime = ReduceModulo251_Sum(LeftValue, RightValue);
+			const std::uint8_t OutputIndex =
+				static_cast<std::uint8_t>((LeftValue - RightValue) ^ SumModuloPrime);
+
+			// 你原本的“(Right >> 1) | ((Left % 251) << 7)”：
+			// (Left % 251) << 7 等价于 ((Left % 251) & 1) << 7
+			const std::uint8_t LeftReducedModuloPrime = ReduceModulo251_Byte(LeftValue);
+			const std::uint8_t MostSignificantBit = static_cast<std::uint8_t>((LeftReducedModuloPrime & 1u) << 7);
+			const std::uint8_t RotatedByteData = static_cast<std::uint8_t>((RightValue >> 1) | MostSignificantBit);
+
+			// 你原本的“乘法 mod 256”其实就是取低 8 位：保留但更快
+			const std::uint8_t MultipliedByteData =
+				static_cast<std::uint8_t>(
+					static_cast<std::uint16_t>(LeftIndex + RotatedByteData) *
+					static_cast<std::uint16_t>(RightIndex + RotatedByteData)
+				);
+
+			LeftIndex = static_cast<std::uint8_t>(LeftIndex + MultipliedByteData);
+			RightIndex = static_cast<std::uint8_t>(RightIndex + PermutationTablePointer[LeftIndex]);
+
+			// RC4-ish swap：保留
+			std::swap(KeyStatePointer[LeftIndex], KeyStatePointer[RightIndex]);
+
+			KeyStream[RoundIndex] = KeyStatePointer[OutputIndex];
+		}
+
+		return KeyStream;
 	}
 }

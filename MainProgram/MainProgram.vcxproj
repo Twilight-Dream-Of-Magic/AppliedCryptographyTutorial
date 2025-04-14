@@ -144,11 +144,18 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Support+Library\CommonToolkit.hpp" />
+    <ClInclude Include="Support+Library\LD_Bitset\BooleanBitWrapper.hpp" />
+    <ClInclude Include="Support+Library\LD_Bitset\DynamicBitset.hpp" />
+    <ClInclude Include="Support+Library\LD_Bitset\DynamicBitSetIterators.hpp" />
+    <ClInclude Include="Support+Library\LD_Bitset\TestDynamicBitset.hpp" />
     <ClInclude Include="Support+Library\Support-Library.hpp" />
     <ClInclude Include="Support+Library\TitianWallCiphers.hpp" />
     <ClInclude Include="Support+Library\UnitTester.hpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Support+Library\LD_Bitset\BooleanBitWrapper.cpp" />
+    <ClCompile Include="Support+Library\LD_Bitset\DynamicBitSet.cpp" />
+    <ClCompile Include="Support+Library\LD_Bitset\DynamicBitSetIterators.cpp" />
     <ClCompile Include="Support+Library\MainProgram.cpp" />
   </ItemGroup>
   <ItemGroup>

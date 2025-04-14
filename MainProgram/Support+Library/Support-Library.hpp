@@ -112,13 +112,15 @@
 
 #endif
 
+#include "LD_Bitset/TestDynamicBitset.hpp"
+
 namespace CommonToolkit
 {
 	// false value attached to a dependent name (for static_assert)
-	template <class>
+	template <auto>
 	inline constexpr bool Dependent_Always_Failed = false;
 	// true value attached to a dependent name (for static_assert)
-	template <class>
+	template <auto>
 	inline constexpr bool Dependent_Always_Succeed = true;
 
 	template<class T> struct dependent_always_true : std::true_type {};
@@ -204,7 +206,7 @@ namespace CommonToolkit
 				"destination type to be trivially constructible");
     
 			To dst;
-			std::memcpy(&dst, &src, sizeof(To));
+			::memcpy(&dst, &src, sizeof(To));
 			return dst;
 		}
 		@/source-code@
@@ -276,11 +278,11 @@ namespace CommonToolkit
 	  CPP2020_BIT_CAST_STATIC_ASSERTS(To, From);
   
 	  typename std::aligned_storage<sizeof(To), alignof(To)>::type to_storage;
-	  std::memcpy(&to_storage, &from_storage, sizeof(To));  // Above `constexpr` is optimistic, fails here.
+	  ::memcpy(&to_storage, &from_storage, sizeof(To));  // Above `constexpr` is optimistic, fails here.
 	  return reinterpret_cast<To&>(to_storage);
 	  // More common implementation:
 	  // std::remove_const_t<To> to{};
-	  // std::memcpy(&to, &from, sizeof(To));  // Above `constexpr` is optimistic, fails here.
+	  // ::memcpy(&to, &from, sizeof(To));  // Above `constexpr` is optimistic, fails here.
 	  // return to;
 	}
 
@@ -494,15 +496,27 @@ inline void my_cpp2020_assert(const bool JudgmentCondition, const char* ErrorMes
 {
 	if(!JudgmentCondition)
 	{
-		std::cout << "The error message is(错误信息是):\n" << ErrorMessage << std::endl;
+		std::system("chcp 65001");
 
+		std::cout << "The error message is(错误信息是):\n" << ErrorMessage << std::endl;
 		std::cout << "Oh, crap, some of the code already doesn't match the conditions at runtime.(哦，糟糕，有些代码在运行时已经不匹配条件。)\n\n\n" << std::endl;
 		std::cout << "Here is the trace before the assertion occurred(下面是发生断言之前的追踪信息):\n\n" << std::endl;
 		std::cout << "The condition determines the code file that appears to be a mismatch(条件判断出现不匹配的代码文件):\n" << AssertExceptionDetailTrackingObject.file_name() << std::endl;
 		std::cout << "Name of the function where this assertion is located(该断言所在的函数的名字):\n" << AssertExceptionDetailTrackingObject.function_name() << std::endl;
 		std::cout << "Number of lines of code where the assertion is located(该断言所在的代码行数):\n" << AssertExceptionDetailTrackingObject.line() << std::endl;
 		std::cout << "Number of columns of code where the assertion is located(该断言所在的代码列数):\n" << AssertExceptionDetailTrackingObject.column() << std::endl;
+
+		// Print stack trace for C++23 and above
+		#if __cplusplus >= 202300L
+		std::cout << "Stack trace before assertion:\n";
 		
+
+		for (const auto& frame : std::stacktrace::current())
+		{
+			std::cout << frame << std::endl;
+		}
+		#endif
+
 		throw std::runtime_error(ErrorMessage);
 	}
 	else
@@ -531,7 +545,7 @@ struct MemorySetUitl
 	 * @note The intention is that the memory store is always performed (i.e., never elided),
 	 *		 regardless of optimizations. This is in contrast to calls to the memset function.
 	 */
-	inline volatile void* fill_memory_byte_no_optimize_implementation(void* buffer_pointer, const int byte_value, size_t size)
+	inline volatile void* fill_memory_byte_no_optimize_implementation(volatile void* buffer_pointer, const int byte_value, size_t size)
 	{
 		if(buffer_pointer == nullptr)
 			return nullptr;
@@ -637,7 +651,7 @@ struct MemorySetUitl
 		#endif
 	}
 
-	inline volatile void fill_memory(void* buffer_pointer, const int byte_value, size_t size)
+	inline volatile void fill_memory(volatile void* buffer_pointer, const int byte_value, size_t size)
 	{
 		volatile void* check_pointer = nullptr;
 		check_pointer = this->fill_memory_byte_no_optimize_implementation(buffer_pointer, byte_value, size);
@@ -684,7 +698,7 @@ static inline volatile void* memory_set_no_optimize_function(void* buffer_pointe
 			#if __cplusplus >= 202002L
 
 			std::span<unsigned char> memory_data_span_view{ (unsigned char *)buffer_pointer, (unsigned char *)buffer_pointer + size };
-			volatile void* check_pointer = std::memmove(memory_data_span_view.data(), fill_memory_datas.data(), size);
+			volatile void* check_pointer = ::memmove(memory_data_span_view.data(), fill_memory_datas.data(), size);
 			
 			if(memory_data_span_view[0] != (unsigned char)byte_value || memory_data_span_view[memory_data_span_view.size() - 1] != (unsigned char)byte_value || check_pointer == nullptr)
 				return nullptr;
@@ -696,7 +710,7 @@ static inline volatile void* memory_set_no_optimize_function(void* buffer_pointe
 
 			#else
 
-			volatile void* check_pointer = std::memmove((unsigned char *)buffer_pointer, fill_memory_datas.data(), size);
+			volatile void* check_pointer = ::memmove((unsigned char *)buffer_pointer, fill_memory_datas.data(), size);
 			if(buffer_pointer == check_pointer)
 				return buffer_pointer;
 			else
@@ -711,7 +725,7 @@ static inline volatile void* memory_set_no_optimize_function(void* buffer_pointe
 			#if __cplusplus >= 202002L
 
 			std::span<char> memory_data_span_view{ (char *)buffer_pointer, (char *)buffer_pointer + size };
-			volatile void* check_pointer = std::memmove(memory_data_span_view.data(), fill_memory_datas.data(), size);
+			volatile void* check_pointer = ::memmove(memory_data_span_view.data(), fill_memory_datas.data(), size);
 			
 			if(memory_data_span_view[0] != (char)byte_value || memory_data_span_view[memory_data_span_view.size() - 1] != (char)byte_value || check_pointer == nullptr)
 				return nullptr;
@@ -723,7 +737,7 @@ static inline volatile void* memory_set_no_optimize_function(void* buffer_pointe
 
 			#else
 
-			volatile void* check_pointer = std::memmove((char *)buffer_pointer, fill_memory_datas.data(), size);
+			volatile void* check_pointer = ::memmove((char *)buffer_pointer, fill_memory_datas.data(), size);
 			if(buffer_pointer == check_pointer)
 				return buffer_pointer;
 			else
@@ -749,8 +763,7 @@ static inline volatile void* memory_set_no_optimize_function(void* buffer_pointe
 #endif
 
 // Try to allocate a temporary memory size.
-std::optional<std::size_t> 
-inline try_allocate_temporary_memory_size(std::size_t memory_byte_size)
+inline std::optional<std::size_t> try_allocate_temporary_memory_size(std::size_t memory_byte_size)
 {
 	std::size_t temporary_memory_byte_size = 0;
 
@@ -781,443 +794,5 @@ inline try_allocate_temporary_memory_size(std::size_t memory_byte_size)
 
 	return temporary_memory_byte_size;
 }
-
-#if defined(USE_LARGER_NUMBER_CLASSS)
-
-class LargeNumber : public DynamicBitsetData
-{
-public:
-	enum class BitArithmeticOperation
-	{
-		Addition,
-		Subtraction,
-		Multiplication,
-		Division
-	};
-
-	LargeNumber operator-() const
-	{
-		
-	}
-
-	LargeNumber& operator++()
-	{
-		
-	}
-
-	LargeNumber operator++(int)
-	{
-		LargeNumber result = *this;
-		++(*this);
-		return result;
-	}
-
-	LargeNumber& operator--()
-	{
-		
-	}
-
-	LargeNumber operator--(int)
-	{
-		LargeNumber result = *this;
-		--(*this);
-		return result;
-	}
-
-	bool operator==(const LargeNumber& other_number) const
-	{
-		return CompareNumber(other_number) == 0;
-	}
-
-	bool operator!=(const LargeNumber& other_number) const
-	{
-		return CompareNumber(other_number) != 0;
-	}
-
-	bool operator<(const LargeNumber& other_number) const
-	{
-		return CompareNumber(other_number) < 0;
-	}
-
-	bool operator<=(const LargeNumber& other_number) const
-	{
-		return CompareNumber(other_number) <= 0;
-	}
-
-	bool operator>(const LargeNumber& other_number) const
-	{
-		return CompareNumber(other_number) > 0;
-	}
-
-	bool operator>=(const LargeNumber& other_number) const
-	{
-		return CompareNumber(other_number) >= 0;
-	}
-
-	friend LargeNumber operator&(const LargeNumber& a, const LargeNumber& b)
-	{
-		
-	}
-
-	LargeNumber& operator&=(const LargeNumber& other)
-	{
-		
-	}
-
-	friend LargeNumber operator|(const LargeNumber& a, const LargeNumber& b)
-	{
-		
-	}
-
-	LargeNumber& operator|=(const LargeNumber& other)
-	{
-		
-	}
-
-	friend LargeNumber operator^(const LargeNumber& a, const LargeNumber& b)
-	{
-		
-	}
-
-	LargeNumber& operator^=(const LargeNumber& other)
-	{
-		
-	}
-
-	friend LargeNumber operator~(const LargeNumber& number)
-	{
-		
-	}
-
-	LargeNumber& operator~()
-	{
-		
-	}
-
-	LargeNumber operator+(const LargeNumber& other) const
-	{
-		
-	}
-
-	LargeNumber operator-(const LargeNumber& other) const
-	{
-		
-	}
-
-	LargeNumber operator*(const LargeNumber& other) const
-	{
-		
-	}
-
-	LargeNumber operator/(const LargeNumber& other) const
-	{
-		
-	}
-
-	LargeNumber operator%(const LargeNumber& other) const
-	{
-		auto& self = *(this);
-
-		LargeNumber divisor = self / other;
-
-		return *this - (divisor * other);
-	}
-
-	LargeNumber& operator+=(const LargeNumber& other)
-	{
-		*this = *this + other;
-		return *this;
-	}
-
-	LargeNumber& operator-=(const LargeNumber& other)
-	{
-		*this = *this - other;
-		return *this;
-	}
-
-	LargeNumber& operator*=(const LargeNumber& other)
-	{
-		*this = *this * other;
-		return *this;
-	}
-
-	LargeNumber& operator*=(const LargeNumber& other)
-	{
-		*this = *this / other;
-		return *this;
-	}
-
-	LargeNumber& operator%=(const LargeNumber& other)
-	{
-		*this = *this % other;
-		return *this;
-	}
-
-	friend LargeNumber AbsoluteValue(const LargeNumber& number)
-	{
-		
-	}
-
-	friend LargeNumber SquareRoot(const LargeNumber& number)
-	{
-		if (number.is_negative)
-			throw std::invalid_argument("cannot calculate square root of negative number");
-
-		LargeNumber result(number.size() / 2 + 1, 0);
-		for (std::size_t i = 0; i < result.size(); i++)
-		{
-			LargeNumber test = result | (LargeNumber(1, 1) << i);
-			if ((test * test) <= number)
-				result = std::move(test);
-		}
-		return result;
-	}
-
-	friend LargeNumber Power(const LargeNumber& base, LargeNumber exponent)
-	{
-		if (exponent.is_negative)
-			throw std::invalid_argument("exponent must be non-negative");
-
-		LargeNumber base_copy(base);
-
-		if (base_copy.size() != exponent.size())
-			AdjustmentBitsetSize(base_copy, exponent);
-
-		LargeNumber zero(0, base_copy.size(), false, false);
-		LargeNumber one(1, exponent.size(), false, false);
-
-		LargeNumber result(one);
-		LargeNumber curr_base(base);
-		while (exponent > zero)
-		{
-			if ((exponent & one) == one)
-			{
-				result = result * curr_base;
-			}
-			curr_base = curr_base * curr_base;
-			exponent = std::move(exponent >> 1);
-		}
-		return result;
-	}
-
-	friend LargeNumber operator<<(const LargeNumber& number, std::size_t shift_amount)
-	{
-		
-	}
-
-	LargeNumber& operator<<=(std::size_t shift_amount)
-	{
-		
-	}
-
-	friend LargeNumber operator>>(const LargeNumber& number, std::size_t shift_amount)
-	{
-		
-	}
-
-	LargeNumber& operator>>=(std::size_t shift_amount)
-	{
-		
-	}
-
-	LargeNumber()
-		: LargeNumber(64, 0)
-	{
-
-	}
-
-	LargeNumber(std::size_t bit_size, char bit)
-	{
-		if (bit != 0 && bit != 1)
-			my_cpp2020_assert(false, "", std::source_location::current());
-
-		bit_chunk_data_.clear();
-		bit_chunk_data_.resize(bit_size, bit);
-	}
-
-	LargeNumber(const LargeNumber& other)
-	{
-	}
-
-	LargeNumber(LargeNumber&& other)
-	{
-
-	}
-
-	LargeNumber& operator=(LargeNumber&& other)
-	{
-		//Do not move from ourselves or all hell will break loose
-		if (this == std::addressof(other))
-			return *this;
-
-		//Call our own destructor to clean up the class object before moving it
-		std::destroy_at(this);
-
-		//Moving class objects from calling our own copy constructor or move constructor
-		std::construct_at(this, other);
-	}
-
-	~LargeNumber()
-	{
-		memory_set_no_optimize_function<0x00>(bit_chunk_data_.data(), bit_chunk_data_.size());
-		bit_chunk_data_.clear();
-		bit_chunk_data_.shrink_to_fit();
-		is_signed = false;
-		is_negative = false;
-	}
-
-private:
-
-	friend int CompareNumber(const LargeNumber& a, const LargeNumber& b)
-	{
-		return a.CompareNumber(b);
-	}
-
-	int CompareNumber(const LargeNumber& other_number) const
-	{
-		
-	}
-
-	LargeNumber BitAddition(const LargeNumber& other) const
-	{
-		LargeNumber result;
-
-		auto function = [&result](const LargeNumber& left, const LargeNumber& right) -> void
-		{
-			bool carry_bit = false;
-
-			for (std::size_t index = 0; index < left.bit_chunk_data_.size(); index++)
-			{
-				bool bit_a = left.bit_chunk_data_[index] == '1' ? true : false;
-				bool bit_b = right.bit_chunk_data_[index] == '1' ? true : false;
-
-				bool sum_bit = bit_a ^ bit_b ^ carry_bit;
-				carry_bit = (bit_a && bit_b) || (bit_a && carry_bit) || (bit_b && carry_bit);
-
-				result.bit_chunk_data_.push_back(sum_bit == false ? 0 : 1);
-			}
-		};
-
-		auto& self = *(this);
-
-		// If none of the numbers are negative, we not need any special operation
-		function(self, other);
-		return result;
-	}
-
-	LargeNumber BitSubtraction(const LargeNumber& other) const
-	{
-		LargeNumber result;
-
-		auto function = [&result](const LargeNumber& left, const LargeNumber& right) -> void
-		{
-			bool borrow_bit = false;
-
-			for (std::size_t index = 0; index < left.bit_chunk_data_.size(); index++)
-			{
-				bool bit_a = left.bit_chunk_data_[index] == '1' ? true : false;
-				bool bit_b = right.bit_chunk_data_[index] == '1' ? true : false;
-
-				bool difference_bit = bit_a ^ bit_b ^ borrow_bit;
-				borrow_bit = (!bit_a && bit_b) || (bit_a && borrow_bit) || (bit_b && borrow_bit);
-
-				result.bit_chunk_data_.push_back(difference_bit == false ? 0 : 1);
-			}
-		};
-
-		auto& self = *(this);
-
-		// Check if either number is negative
-		bool self_is_negative = self.is_signed && self.is_negative;
-		bool other_is_negative = other.is_signed && other.is_negative;
-
-
-		function(self, other);
-		return result;
-	}
-
-	LargeNumber BitMultiplication(const LargeNumber& other) const
-	{
-		LargeNumber result;
-
-		auto function = [&result](const LargeNumber& left, const LargeNumber& right) -> void
-		{
-			bool carry_bit = false;
-
-			for (std::size_t index = 0; index < left.bit_chunk_data_.size(); index++)
-			{
-				bool bit_a = left.bit_chunk_data_[index] == '1' ? true : false;
-				bool bit_b = right.bit_chunk_data_[index] == '1' ? true : false;
-
-				bool product_bit = bit_a && bit_b;
-				bool bit_c = bit_a ^ bit_b;
-				product_bit = product_bit ^ (carry_bit && bit_c);
-				carry_bit = (bit_a && bit_b) || (bit_a && carry_bit) || (bit_b && carry_bit);
-
-				result.bit_chunk_data_.push_back(product_bit == false ? 0 : 1);
-			}
-		};
-
-		auto& self = *(this);
-
-		function(self, other);
-		return result;
-	}
-
-	LargeNumber BitDivision(const LargeNumber& other) const
-	{
-		std::vector<std::uint32_t> zero(other.bit_chunk_data_.size(), 0);
-
-		if (other.bit_chunk_data_ == zero)
-		{
-			zero.clear();
-			zero.shrink_to_fit();
-			my_cpp2020_assert(false, "division by zero", std::source_location::current());
-		}
-
-		auto& self = *(this);
-
-		if (self < other)
-			return LargeNumber(other.size(), 0);
-
-		LargeNumber quotient{ 1, other.size(), false, false };
-		LargeNumber remainder = self;
-
-		auto function = [&quotient, &remainder, &other]() -> void
-		{
-			LargeNumber shift{ 1, other.size(), false, false };
-
-			while (remainder >= other)
-			{
-				LargeNumber divisor{ other };
-				while (divisor <= remainder)
-				{
-					divisor <<= 1;
-					shift <<= 1;
-				}
-				divisor >>= 1;
-				shift >>= 1;
-
-				quotient = quotient + shift;
-				remainder = remainder - divisor;
-			}
-		};
-
-		function();
-		return quotient;
-	}
-};
-
-// User defined literal example: "500"_BIGINTEGER
-LargeNumber operator""_BIGINTEGER(const char* bits, size_t size)
-{
-	std::string bit_string{ bits, size };
-	return LargeNumber(bit_string);
-}
-
-LargeNumber operator""_BIGINTEGER(std::uint64_t number) { return LargeNumber(number, 64, false, false); }
-
-
-#endif
 
 #endif // !SUPPORT_LIBRARY_H
